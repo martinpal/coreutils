@@ -232,6 +232,7 @@ static char space_character = ' ';
 /* I/O buffers.  */
 static char *ibuf;
 static char *obuf;
+static char *cbuf;
 
 /* Current index into 'obuf'. */
 static idx_t oc = 0;
@@ -710,6 +711,27 @@ alloc_obuf (void)
     {
       alloc_ibuf ();
       obuf = ibuf;
+    }
+}
+
+/* Ensure output buffer CBUF is allocated/initialized.  */
+
+static void
+alloc_cbuf (void)
+{
+  if (cbuf)
+    return;
+
+  cbuf = alignalloc (page_size, output_blocksize);
+  if (!cbuf)
+    {
+      char hbuf[LONGEST_HUMAN_READABLE + 1];
+      die (EXIT_FAILURE, 0,
+           _("memory exhausted by output buffer of size %td"
+             " bytes (%s)"),
+           output_blocksize,
+           human_readable (output_blocksize, hbuf,
+                           human_opts | human_base_1024, 1, 1));
     }
 }
 
@@ -2102,6 +2124,7 @@ dd_copy (void)
 {
   char *bufstart;		/* Input buffer. */
   ssize_t nread;		/* Bytes read in the current block.  */
+  ssize_t nreadc;		/* Bytes read in the current compare block.  */
 
   /* If nonzero, then the previously read block was partial and
      PARTREAD was its size.  */
@@ -2170,6 +2193,7 @@ dd_copy (void)
 
   alloc_ibuf ();
   alloc_obuf ();
+  alloc_cbuf ();
   int saved_byte = -1;
 
   while (true)
@@ -2274,6 +2298,15 @@ dd_copy (void)
 
       if (ibuf == obuf)		/* If not C_TWOBUFS. */
         {
+          nreadc = iread_fnc (STDOUT_FILENO, cbuf, nread);
+          if (nreadc <= 0)
+            die (EXIT_FAILURE, 0, _("Cannot read from output device"));
+          if (nread != nreadc)
+            die (EXIT_FAILURE, 0, _("Output is shorter than input."));
+          if (0 == memcmp(cbuf, obuf, nread))
+            continue;
+          else
+            lseek(STDOUT_FILENO, -nreadc, SEEK_CUR);
           idx_t nwritten = iwrite (STDOUT_FILENO, obuf, n_bytes_read);
           w_bytes += nwritten;
           if (nwritten != n_bytes_read)
@@ -2494,7 +2527,7 @@ main (int argc, char **argv)
          the file, go ahead with write-only access; it might work.  */
       if ((! seek_records
            || ifd_reopen (STDOUT_FILENO, output_file, O_RDWR | opts, perms) < 0)
-          && (ifd_reopen (STDOUT_FILENO, output_file, O_WRONLY | opts, perms)
+          && (ifd_reopen (STDOUT_FILENO, output_file, O_RDWR | opts, perms)
               < 0))
         die (EXIT_FAILURE, errno, _("failed to open %s"),
              quoteaf (output_file));
